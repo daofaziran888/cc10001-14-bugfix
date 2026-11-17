@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.services import batch_status
 from app.services.result_store import ResultStoreService
 
 router = APIRouter(prefix="/api/result_store", tags=["采集仓储"])
@@ -15,15 +16,16 @@ router = APIRouter(prefix="/api/result_store", tags=["采集仓储"])
 service = ResultStoreService()
 
 LIST_FIELDS = ["批次编号", "关联任务", "原始行数", "有效行数", "存储路径", "压缩格式", "校验摘要", "落地时间"]
-STATUSES = ["接收中", "已落盘", "校验通过", "校验失败"]
+STATUSES = list(batch_status.RESULT_STATUSES)
 
 
 def query_filters(request: Request) -> dict[str, str]:
-    """只接受当前模块声明过的字段，忽略分页等保留参数。"""
+    """只接受当前模块声明过的字段（含派生的分发字段），忽略分页等保留参数。"""
+    accepted = set(LIST_FIELDS) | {"分发状态", "分发记录", "分发通道"}
     return {
         key: value.strip()
         for key, value in request.query_params.items()
-        if key in LIST_FIELDS and value.strip()
+        if key in accepted and value.strip()
     }
 
 
@@ -31,7 +33,7 @@ def query_filters(request: Request) -> dict[str, str]:
 def list_entries(
     request: Request,
     keyword: str | None = Query(default=None, description="按批次编号检索"),
-    status: str | None = Query(default=None, description="接收中、已落盘、校验通过、校验失败"),
+    status: str | None = Query(default=None, description="接收中、已落盘、校验通过、校验失败、已分发"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResult[dict]:
@@ -53,16 +55,32 @@ def export_entries(
     output = io.StringIO()
     output.write("\ufeff")
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(["id", *LIST_FIELDS, "status"])
+    writer.writerow(["id", *LIST_FIELDS, "status", "分发状态", "分发记录"])
     for item in items:
         row = []
-        for value in [item.get("id"), *(item.get(field, "") for field in LIST_FIELDS), item.get("status", "")]:
+        for value in [
+            item.get("id"), *(item.get(field, "") for field in LIST_FIELDS),
+            item.get("status", ""), item.get("分发状态", ""), item.get("分发记录", ""),
+        ]:
             text = "" if value is None else str(value)
             row.append("'" + text if text.startswith(("=", "+", "-", "@")) else text)
         writer.writerow(row)
     return StreamingResponse(
         iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="result_store.csv"'})
+
+
+@router.get("/status-options")
+def list_status_options() -> dict:
+    """返回采集仓储允许的状态集合，页面筛选与详情共用同一份口径。"""
+    return {"statuses": STATUSES, "dispatched": batch_status.DISPATCHED_STATUS}
+
+
+@router.get("/status-migrations")
+def list_status_migrations() -> dict:
+    """返回历史未定义批次状态的迁移判定结果，用于审计追溯。"""
+    items = service.list_migrations()
+    return {"items": items, "total": len(items), "statuses": STATUSES}
 
 
 @router.get("/{entry_id}", response_model=dict)

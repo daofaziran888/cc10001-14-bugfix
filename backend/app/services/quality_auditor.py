@@ -8,7 +8,9 @@ import time
 from typing import Any
 
 from app.store import store
+from app.services import batch_status
 from app.services.quality_check import QualityCheckService
+from app.services.result_store import ResultStoreService
 
 RESULT_MODULE = "result_store"
 
@@ -26,6 +28,10 @@ class QualityAuditor:
         batch = store.find(RESULT_MODULE, batch_id)
         if batch is None:
             return {"ok": False, "error": f"结果批次 {batch_id} 不存在"}
+
+        # 读取时先校准历史状态；已分发批次以分发记录为准。
+        current = ResultStoreService.sync_status(batch)
+        already_dispatched = current == batch_status.DISPATCHED_STATUS
 
         # 读取批次指标
         raw = max(1, int(batch["id"]) * 50) if batch else 100
@@ -71,19 +77,26 @@ class QualityAuditor:
         }
         store.joint_append("audit_records", record)
 
-        # 更新批次状态
-        batch["status"] = "校验通过" if verdict == "通过" else "校验失败"
-        batch["pending"] = verdict != "通过"
+        # 更新批次状态：只写采集仓储合法状态；已分发批次保留分发完成态，
+        # 审计结论仍写进审计记录便于追溯。
+        target = "校验通过" if verdict == "通过" else "校验失败"
+        if already_dispatched:
+            status = current
+        else:
+            status, _ = batch_status.write_batch_status(batch, target)
 
         return {
             "ok": True,
+            "status": status,
             "audit": record,
             "audit_entry": audit_entry,
         }
 
     def audit_all(self) -> dict[str, Any]:
         """对采集仓储中所有待校验批次执行审计。"""
-        batches = [b for b in store.rows(RESULT_MODULE) if b.get("status") in ("接收中", "已落盘")]
+        result_svc = ResultStoreService()
+        batches, _ = result_svc.list_entries(page=1, size=1000000)
+        batches = [b for b in batches if b.get("status") in ("接收中", "已落盘")]
         results: list[dict[str, Any]] = []
         for batch in batches:
             res = self.audit_batch(int(batch["id"]))

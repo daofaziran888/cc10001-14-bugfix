@@ -48,6 +48,7 @@ class DeltaTracker:
                 "压缩格式": "snappy",
                 "校验摘要": f"wm-{current_watermark}",
                 "落地时间": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "创建时间": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "接收中",
                 "pending": True,
                 "abnormal": False,

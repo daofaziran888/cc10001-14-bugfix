@@ -24,6 +24,7 @@ class Store:
             "audit_records": [],       # 质量审计记录
             "sync_positions": [],      # 增量同步水位
             "dispatch_logs": [],       # 数据分发日志
+            "status_migrations": [],   # 批次状态迁移判定结果
             "proxy_assignments": [],   # 代理分配记录
             "cookie_rotations": [],    # 凭证轮换记录
             "scheduler_triggers": [],  # 调度触发记录

@@ -23,6 +23,25 @@
         <span>{{ field }}</span>
         <input v-model="filters[field]" :data-testid="`filter-${field}`" :placeholder="`按${field}检索`" />
       </label>
+      <label class="filter-item">
+        <span>批次状态</span>
+        <select v-model="statusFilter" data-testid="filter-status">
+          <option value="">全部合法状态</option>
+          <option v-for="item in statuses" :key="item" :value="item">{{ item }}</option>
+        </select>
+      </label>
+      <label class="filter-item">
+        <span>分发状态</span>
+        <select v-model="dispatchFilter" data-testid="filter-分发状态">
+          <option value="">全部分发状态</option>
+          <option value="已分发">已分发</option>
+          <option value="未分发">未分发</option>
+        </select>
+      </label>
+      <label class="filter-item">
+        <span>分发记录</span>
+        <input v-model="filters['分发记录']" data-testid="filter-分发记录" placeholder="按分发记录编号检索" />
+      </label>
       <button class="btn" data-testid="query" type="submit">查询</button>
       <button class="btn ghost" data-testid="reset" type="button" @click="resetFilters">重置条件</button>
     </form>
@@ -30,13 +49,13 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th v-for="column in displayColumns" :key="column">{{ column }}</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)" :data-testid="`row-${row.id}`" :data-status="String(row.status)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in displayColumns" :key="column">{{ cellValue(row, column) }}</td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -51,7 +70,7 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无采集仓储数据，可先登记结果批次</td>
+          <td :colspan="displayColumns.length + 1" class="empty-state">暂无采集仓储数据，可先登记结果批次</td>
         </tr>
       </tbody>
     </table>
@@ -88,32 +107,64 @@ type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/result_store'
 const columns = ["批次编号", "关联任务", "原始行数", "有效行数", "存储路径", "压缩格式", "校验摘要", "落地时间"]
+const dispatchColumns = ["批次状态", "分发状态", "分发记录"]
+const displayColumns = [...columns, ...dispatchColumns]
 const actions = ["触发校验", "标记通过", "标记失败"]
-const statuses = ["接收中", "已落盘", "校验通过", "校验失败"]
-const metricNames = ["批次总数", "校验通过批次", "校验失败批次"]
+// 与后端 batch_status.RESULT_STATUSES 保持一致；读取时还会用接口返回值覆盖。
+const statuses = ref<string[]>(["接收中", "已落盘", "校验通过", "校验失败", "已分发"])
+const metricNames = ["批次总数", "校验通过批次", "已分发批次"]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
+const statusFilter = ref('')
+const dispatchFilter = ref('')
 const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
-  { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
-  { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
+  { label: metricNames[1], value: rows.value.filter((row) => row.status === '校验通过').length },
+  { label: metricNames[2], value: rows.value.filter((row) => row.status === '已分发').length },
 ])
+
+async function loadStatuses() {
+  try {
+    const response = await request(`${ENDPOINT}/status-options`)
+    if (!response.ok) return
+    const payload = await response.json()
+    if (Array.isArray(payload.statuses) && payload.statuses.length) {
+      statuses.value = payload.statuses
+    }
+  } catch {
+    // 状态口径读取失败时保留本地默认值，不影响列表。
+  }
+}
+
+function queryParams(): Record<string, string> {
+  const params: Record<string, string> = { ...filters.value }
+  if (statusFilter.value) params.status = statusFilter.value
+  if (dispatchFilter.value) params['分发状态'] = dispatchFilter.value
+  return params
+}
+
+function cellValue(row: Row, column: string): string | number {
+  if (column === '批次状态') return row.status ?? '—'
+  return row[column] ?? '—'
+}
 
 function resetFilters() {
   filters.value = {}
+  statusFilter.value = ''
+  dispatchFilter.value = ''
   void reload()
 }
 
 async function exportRows() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value).toString()
+  const query = new URLSearchParams(queryParams()).toString()
   try {
     const response = await request(`${ENDPOINT}/export?${query}`)
     if (!response.ok) throw new Error('导出失败，请稍后重试')
@@ -170,7 +221,7 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = new URLSearchParams(queryParams()).toString()
   try {
     const response = await request(`${ENDPOINT}?${query}`)
     if (!response.ok) {
@@ -184,5 +235,8 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(async () => {
+  await loadStatuses()
+  await reload()
+})
 </script>
